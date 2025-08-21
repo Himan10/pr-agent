@@ -1,6 +1,6 @@
 FROM python:3.12.10-slim AS base
 
-RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt install --no-install-recommends -y git curl python3 python3-pip && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ADD pyproject.toml .
@@ -45,5 +45,22 @@ ADD pr_agent pr_agent
 ADD tests tests
 
 FROM base AS cli
+#add sast tools (ref: ~/pr-agent-workspace/Dockerfile)
+# Install noseyparker from GitHub releases
+RUN NOSEYPARKER_VERSION="v0.24.0" && \
+    curl -L "https://github.com/praetorian-inc/noseyparker/releases/download/${NOSEYPARKER_VERSION}/noseyparker-${NOSEYPARKER_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o noseyparker.tar.gz && \
+    tar -xzf noseyparker.tar.gz -C /tmp && \
+    ln -s /tmp/bin/noseyparker /bin/noseyparker
+
+#TODO: semgrep should be installed in a virtual env and should be run using /env/bin/python
+RUN pip3 install semgrep --break-system-packages
+
+#syft and trivy (for sbom generation)
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+RUN curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+#grypte (to find out vulnerabilities in the packages present in SBOM of a project)
+RUN curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin
+
 ADD pr_agent pr_agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

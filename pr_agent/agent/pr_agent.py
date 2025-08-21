@@ -8,6 +8,7 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
+from pr_agent.tools.pr_security_review import PRSecurityReview
 from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_config import PRConfig
@@ -41,6 +42,7 @@ command2class = {
     "add_docs": PRAddDocs,
     "generate_labels": PRGenerateLabels,
     "help_docs": PRHelpDocs,
+    "security_review": PRSecurityReview
 }
 
 commands = list(command2class.keys())
@@ -53,6 +55,7 @@ class PRAgent:
 
     async def _handle_request(self, pr_url, request, notify=None) -> bool:
         # First, apply repo specific settings if exists
+        print(pr_url, request)
         apply_repo_settings(pr_url)
 
         # Then, apply user specific settings if exists

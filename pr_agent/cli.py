@@ -21,6 +21,7 @@ def set_parser():
     - cli.py --pr_url=... improve
     - cli.py --pr_url=... ask "write me a poem about this PR"
     - cli.py --pr_url=... reflect
+    - cli.py --pr_url=... security_review secrets | sca | sast (provide only one of them)
     - cli.py --issue_url=... similar_issue
     - cli.py --pr_url/--issue_url= help_docs [<asked question>]
 
