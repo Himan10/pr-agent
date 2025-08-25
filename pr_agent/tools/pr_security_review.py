@@ -3,6 +3,7 @@ import os
 import pprint
 import datetime
 import json
+from colorama import Fore, Style
 from typing import List, Dict, Any
 from functools import partial
 from jinja2 import Environment, StrictUndefined
@@ -17,7 +18,6 @@ from pr_agent.tools.scan_pr_contents import SecurityScanner, SCA_FILES_FORMAT
 from pr_agent.algo.utils import ModelType, get_model
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
-
 
 class PRSecurityReview(SecurityScanner):
     """
@@ -52,23 +52,26 @@ class PRSecurityReview(SecurityScanner):
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
+        self.logger = get_logger()
         #answer_str, question_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
-            get_logger().debug(f"AI metadata added to the this command")
+            self.logger.debug(f"AI metadata added to the this command")
         else:
             get_settings().set("config.enable_ai_metadata", False)
-            get_logger().debug(f"AI metadata is disabled for this command")
+            self.logger.debug(f"AI metadata is disabled for this command")
 
         # instantiate the parent class - SecurityScanner
         super().__init__(self.get_new_hunks_with_line_numbers())
+        # findings definition
         self.finding = {
             "data": None
         }
         self.findings_summary = None
+        self.scan_results = None
 
         # declare a dict of key:values to supply to other methods
         self.vars = {
@@ -128,7 +131,7 @@ class PRSecurityReview(SecurityScanner):
                     added_content[filename] = added_lines
                     
         except Exception as e:
-            get_logger().error(f"Error extracting added lines: {e}")
+            self.logger.error(f"Error extracting added lines: {e}")
             
         return added_content
     
@@ -154,14 +157,14 @@ class PRSecurityReview(SecurityScanner):
         
         for file_info in diff_files:
             if os.path.basename(file_info.filename) in SCA_FILES_FORMAT or self.scan_type.lower() == "sast":
-                get_logger().info(f"SKIP processing hunk for file: {file_info.filename}")
+                self.logger.info(f"SKIP processing hunk for file: {file_info.filename}")
                 new_hunks[file_info.filename] = file_info.head_file
                 continue
             if not file_info.patch:
                 continue
                 
             # Get the formatted hunks
-            get_logger().info(f"processing hunk for file: {file_info.filename}")
+            self.logger.info(f"processing hunk for file: {file_info.filename}")
             formatted_hunks = decouple_and_convert_to_hunks_with_lines_numbers(file_info.patch, file_info)
             
             # Extract only new hunk sections using regex
@@ -180,10 +183,10 @@ class PRSecurityReview(SecurityScanner):
 
         try:
             if not self.git_provider.get_files():
-                get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
+                self.logger.info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
             
-            get_logger().info(f"Running {self.scan_type} scan for PR: {self.pr_url}")
+            self.logger.info(f"Running {self.scan_type} scan for PR: {self.pr_url}")
             
             if self.scan_type == "secrets":
                 results = await self.secrets()
@@ -207,42 +210,38 @@ class PRSecurityReview(SecurityScanner):
                 "scan_timestamp": datetime.datetime.now().isoformat()
             }
             
-            get_logger().info(f"{self.scan_type.upper()} scan completed for PR: {self.pr_url}")
-            
-            # write output to a file based on user's choice
-            user_choice = input("Would you like to save output in a file? [y/n]: ")
-            if user_choice.lower() == 'y':
-                self._write_scan_results_to_file(results)
+            self.logger.info(f"{self.scan_type.upper()} scan completed for PR: {self.pr_url}")
             
             # Send the result to openai handler to retrieve details about the findings
             # get_prediction = True, means it will scan the findings_summary
             # if get_prediction = False, it'll analyze vulnerable files found by the scanners
-            predicted_result = await self.get_security_review(results, get_prediction=False)
-            if predicted_result:
-                pprint.pprint(predicted_result)
-            # Offer an interactive file viewer for vulnerable files
-            try:
-                choice = input("Open interactive vulnerability viewer? [y/n]: ")
-                if choice.strip().lower() == 'y':
-                    # interactive viewer allows viewing and analyzing files repeatedly
-                    await self.interactive_vulnerability_viewer()
-            except Exception as _:
-                pass
-            return predicted_result
+
+            choice = input("Open interactive vulnerability viewer? [y/n]: ").lower()
+            await self.get_security_review(results, get_prediction=False if choice.strip() == 'y' else True)
+            if choice.strip() == 'y':
+                # interactive viewer allows viewing and analyzing files repeatedly
+                await self.interactive_vulnerability_viewer()
+            # write the output file to markdown
+            # write output to a file based on user's choice
+            user_choice = input("Would you like to save the raw output in a file? [y/n]: ")
+            if user_choice.lower() == 'y':
+                self._write_scan_results_to_file(results)
+            #report_md = convert_to_markdown(self.prediction)
+            return
             
         except ValueError as e:
-           get_logger().error(str(e))
-           raise e
+            self.logger.error(str(e))
+            raise e
         except Exception as e:
-           get_logger().error(f"{self.scan_type.upper()} scan failed for PR {self.pr_url}: {e}")
-           return {
-               "error": str(e),
-               "pr_metadata": {
-                   "pr_url": self.pr_url,
-                   "scan_type": self.scan_type,
-                   "scan_timestamp": datetime.datetime.now().isoformat()
-               }
-           }
+            self.logger.error(f"{self.scan_type.upper()} scan failed for PR {self.pr_url}: {e}")
+            return {
+                "error": str(e),
+                "pr_metadata": {
+                    "pr_url": self.pr_url,
+                    "scan_type": self.scan_type,
+                    "scan_timestamp": datetime.datetime.now().isoformat()
+                }
+            }
 
     def parse_incremental(self, args: List[str]):
         is_incremental = False
@@ -259,7 +258,7 @@ class PRSecurityReview(SecurityScanner):
         """
         try:
             # Extract findings from scan results
-            self.findings_summary = self._extract_findings_summary(scan_results)
+            self.findings_summary = self._extract_findings_summary(scan_results, display_output=True)
             #print(self.findings_summary)
             self.scan_results = scan_results
             
@@ -282,18 +281,20 @@ class PRSecurityReview(SecurityScanner):
                         "analysis_timestamp": datetime.datetime.now().isoformat()
                     }
                 
+                # This prediction will later be saved in the md file
+                #self.logger.info(f"analysis: {self.prediction}")
                 return self.prediction
             else:
-                get_logger().warning("prediction is currently set to false")
+                self.logger.warning("prediction is currently set to false")
                 return None
             
         except Exception as e:
-           get_logger().error(f"AI security analysis failed for PR {self.pr_url}: {e}")
-           return {
-               "error": str(e),
-               "pr_metadata": scan_results.get("pr_metadata", {}),
-               "analysis_timestamp": datetime.datetime.now().isoformat()
-           }
+            self.logger.error(f"AI security analysis failed for PR {self.pr_url}: {e}")
+            return {
+                "error": str(e),
+                "pr_metadata": scan_results.get("pr_metadata", {}),
+                "analysis_timestamp": datetime.datetime.now().isoformat()
+            }
 
     async def _prepare_prediction(self, model: str) -> None:
         """
@@ -304,7 +305,7 @@ class PRSecurityReview(SecurityScanner):
             if self.finding["data"]:
                 scan_data = self.finding.get("data")
             else:
-                scan_data = self.findings_summary
+                scan_data = self.scan_results
             variables = {
                 "title": self.vars.get('title', 'N/A'),
                 "branch": self.vars.get('branch', 'N/A'),
@@ -340,10 +341,11 @@ class PRSecurityReview(SecurityScanner):
             ai_analysis["analysis_timestamp"] = datetime.datetime.now().isoformat()
             
             self.prediction = ai_analysis
-            get_logger().info(f"AI security analysis completed for PR: {self.pr_url}")
+            self.logger.info(f"AI security analysis completed for PR: {self.pr_url}")
+            report_md = convert_to_markdown(self.prediction)
             
         except Exception as e:
-            get_logger().error(f"AI prediction preparation failed for model {model}: {e}")
+            self.logger.error(f"AI prediction preparation failed for model {model}: {e}")
             self.prediction = None
     
     def _deduplicate_findings(self, findings: List[Dict], dedup_keys: List[str]) -> List[Dict]:
@@ -379,7 +381,7 @@ class PRSecurityReview(SecurityScanner):
                 deduplicated.append(finding)
         
         if len(deduplicated) < len(findings):
-            get_logger().info(f"Deduplicated {len(findings) - len(deduplicated)} duplicate findings")
+            self.logger.info(f"Deduplicated {len(findings) - len(deduplicated)} duplicate findings")
             
         return deduplicated
 
@@ -398,7 +400,7 @@ class PRSecurityReview(SecurityScanner):
                         return fo.head_file
                     break
         except Exception as e:
-            get_logger().warning(f"Unable to fetch head content for {filename}: {e}")
+            self.logger.warning(f"Unable to fetch head content for {filename}: {e}")
         return self.content_dict.get(filename, "")
 
     async def _analyze_single_file(self, filename: str) -> Dict[str, Any]:
@@ -457,7 +459,8 @@ class PRSecurityReview(SecurityScanner):
                                             "type": "secret",
                                             "rule": match.get("rule_name"),
                                             "line": match.get("location", {}).get("offset_span", {}).get("start"),
-                                            "snippet": match.get("snippet", {}).get("matching")
+                                            "snippet": match.get("snippet", {}).get("matching"),
+                                            "filename": filename
                                 })
             
             elif self.scan_type == "sast":
@@ -469,18 +472,27 @@ class PRSecurityReview(SecurityScanner):
                             "message": finding.get("message"),
                             "line": finding.get("extra", {}).get("lines"), #finding.get("start", {}).get("line"),
                             "message": finding.get("extra", {}).get("message"),
-                            "severity": finding.get("extra", {}).get("severity")
+                            "severity": finding.get("extra", {}).get("severity"),
+                            "filename": filename,
+                            "line_number": finding.get("start", {}).get("line")
                         })
             
             elif self.scan_type == "sca" and os.path.basename(filename) in SCA_FILES_FORMAT:
+                is_content_exist = False
                 for vuln in self.scan_results.get("vulnerabilities", []):
-                    findings["findings"].append({
-                        "type": "sca",
-                        "vuln_id": vuln.get("vulnerability", {}).get("id"),
-                        "package": vuln.get("artifact", {}).get("name"),
-                        "version": vuln.get("artifact", {}).get("version"),
-                        "severity": vuln.get("vulnerability", {}).get("severity")
-                    })
+                    # check for filename
+                    is_file_present = filter(lambda x: os.path.basename(x.get("path")) == os.path.basename(filename), vuln.get("artifact", {}).get("locations"))
+                    is_content_exist = list(is_file_present) or False
+                    if is_content_exist:
+                        findings["findings"].append({
+                            "type": "sca",
+                            "vuln_id": vuln.get("vulnerability", {}).get("id"),
+                            "package": vuln.get("artifact", {}).get("name"),
+                            "version": vuln.get("artifact", {}).get("version"),
+                            "severity": vuln.get("vulnerability", {}).get("severity"),
+                            "description": vuln.get("vulnerability", {}).get("description"),
+                            "filename": filename
+                        })
         
         except Exception as e:
             findings["error"] = str(e)
@@ -488,7 +500,7 @@ class PRSecurityReview(SecurityScanner):
         #print(findings)
         return findings
 
-    def _extract_findings_summary(self, scan_results: Dict) -> Dict:
+    def _extract_findings_summary(self, scan_results: Dict, display_output: bool = False) -> Dict:
         """
         Extracts and summarizes scan results with counts and vulnerable filenames.
         """
@@ -498,7 +510,8 @@ class PRSecurityReview(SecurityScanner):
                 "critical": 0,
                 "high": 0,
                 "medium": 0,
-                "low": 0
+                "low": 0,
+                "info": 0
             },
             "sast": {
                 "error": 0,
@@ -552,11 +565,11 @@ class PRSecurityReview(SecurityScanner):
 
                     files = set()
                     for finding in deduped_sast:
-                        severity = finding.get("extra", {}).get("severity", "medium").lower()
+                        severity = finding.get("extra", {}).get("severity", "warning").lower()
                         if severity in summary["sast"]:
                             summary["sast"][severity] += 1
                         else:
-                            summary["sast"]["medium"] += 1
+                            summary["sast"]["warning"] += 1
                         
                         path = finding.get("path")
                         if path:
@@ -610,7 +623,104 @@ class PRSecurityReview(SecurityScanner):
         all_files.update(summary["sca"]["files"])
         summary["vulnerable_files"] = sorted(all_files)
         
+        # Display stylized output if requested
+        if display_output:
+            self._display_stylized_summary(summary, scan_results)
+        
         return summary
+
+    def _display_stylized_summary(self, summary: Dict, scan_results: Dict) -> None:
+        """
+        Display stylized summary output with colorama colors
+        """
+        from colorama import Fore, Back, Style, init
+        init(autoreset=True)  # Auto-reset colors after each print
+        
+        # Color mapping
+        severity_colors = {
+            'critical': Fore.MAGENTA + Style.BRIGHT,    # Dark Red/Magenta
+            'high': Fore.RED + Style.BRIGHT,            # Light Red
+            'medium': Fore.YELLOW + Style.BRIGHT,       # Yellow
+            'low': Fore.GREEN + Style.BRIGHT,           # Green
+            'info': Fore.BLUE + Style.BRIGHT,           # Blue
+            'error': Fore.RED + Style.BRIGHT,           # Red for errors
+            'warning': Fore.YELLOW + Style.BRIGHT,      # Yellow for warnings
+            'note': Fore.CYAN + Style.BRIGHT            # Cyan for notes
+        }
+        
+        scan_type = scan_results.get("pr_metadata", {}).get("scan_type", "unknown")
+        pr_title = scan_results.get("pr_metadata", {}).get("title", "N/A")
+        
+        print(f"\n{Style.BRIGHT}SECURITY SCAN SUMMARY{Style.RESET_ALL}")
+        print("=" * 50)
+        print(f"{Fore.CYAN}PR Title:{Style.RESET_ALL} {pr_title}")
+        print(f"{Fore.CYAN}Scan Type:{Style.RESET_ALL} {scan_type.upper()}")
+        print(f"{Fore.CYAN}Total Issues:{Style.RESET_ALL} {summary['total_issues']}")
+        print(f"{Fore.CYAN}Vulnerable Files:{Style.RESET_ALL} {len(summary['vulnerable_files'])}")
+        
+        if not summary["has_findings"]:
+            print(f"\n{Fore.GREEN + Style.BRIGHT}No security issues found!{Style.RESET_ALL}")
+            return
+        
+        print(f"\n{Style.BRIGHT}FINDINGS BREAKDOWN{Style.RESET_ALL}")
+        print("-" * 30)
+        
+        # Display findings by scan type
+        if scan_type == "secrets":
+            self._display_scan_type_summary("SECRETS", summary["secrets"], severity_colors)
+        elif scan_type == "sast":
+            self._display_scan_type_summary("SAST", summary["sast"], severity_colors)
+        elif scan_type == "sca":
+            self._display_scan_type_summary("SCA", summary["sca"], severity_colors, show_components=True)
+        
+        # Display vulnerable files
+        if summary["vulnerable_files"]:
+            print(f"\n{Style.BRIGHT}VULNERABLE FILES{Style.RESET_ALL}")
+            print("-" * 20)
+            for i, file_path in enumerate(summary["vulnerable_files"], 1):
+                filename = os.path.basename(file_path)
+                print(f"  {Fore.WHITE}{i:2d}.{Style.RESET_ALL} {Fore.YELLOW}{filename}{Style.RESET_ALL}")
+        
+        print(f"\n{Style.BRIGHT}NEXT STEPS{Style.RESET_ALL}")
+        print("-" * 15)
+        if summary["total_issues"] > 0:
+            # Determine priority based on severity counts
+            critical_total = (summary["secrets"]["critical"] + 
+                            summary["sca"]["critical"])
+            high_total = (summary["secrets"]["high"] + 
+                         summary["sast"]["error"] + 
+                         summary["sca"]["high"])
+            
+            if critical_total > 0:
+                print(f"  {severity_colors['critical']}CRITICAL: Address {critical_total} critical issues immediately{Style.RESET_ALL}")
+            if high_total > 0:
+                print(f"  {severity_colors['high']}HIGH: Review {high_total} high-severity findings{Style.RESET_ALL}")
+            print(f"  {Fore.CYAN}Run interactive viewer for detailed analysis{Style.RESET_ALL}")
+            print(f"  {Fore.CYAN}Generate AI analysis for remediation guidance{Style.RESET_ALL}")
+        
+        print("=" * 50)
+
+    def _display_scan_type_summary(self, title: str, findings: Dict, colors: Dict, show_components: bool = False) -> None:
+        """
+        Display summary for a specific scan type with colored output
+        """
+        
+        print(f"\n{Style.BRIGHT}{title}{Style.RESET_ALL}")
+        
+        total_findings = 0
+        for severity, count in findings.items():
+            if severity == "files" or (show_components and severity == "component_count"):
+                continue
+            if count > 0:
+                color = colors.get(severity, Fore.WHITE)
+                print(f"  {color}{severity.upper()}: {count}{Style.RESET_ALL}")
+                total_findings += count
+        
+        if show_components and "component_count" in findings:
+            print(f"  {Fore.CYAN}Components Analyzed: {findings['component_count']}{Style.RESET_ALL}")
+        
+        if total_findings == 0:
+            print(f"  {Fore.GREEN}No issues found{Style.RESET_ALL}")
 
     async def interactive_vulnerability_viewer(self) -> None:
         """
@@ -623,30 +733,33 @@ class PRSecurityReview(SecurityScanner):
         """
         try:
             def print_list():
-                get_logger().info("\nVulnerable files:")
+                self.logger.info("\nVulnerable files:")
                 for idx, (st, f) in enumerate(entries, start=1):
-                    get_logger().info(f"  [{idx}] ({st}) {f}")
-                get_logger().info("")
+                    self.logger.info(f"  [{idx}] ({st}) {os.path.basename(f)}")
+                self.logger.info("")
 
             def show_findings(filename):
                 findings = self._get_file_findings(filename)
-                get_logger().info(f"\nFINDINGS FOR {filename}")
+                self.logger.info(f"\nFINDINGS FOR {os.path.basename(filename)}")
                 
                 if "error" in findings:
-                    get_logger().error(f"Error: {findings['error']}")
+                    self.logger.error(f"Error: {findings['error']}")
                     return
                 
                 if not findings["findings"]:
-                    get_logger().info("No findings for this file.")
+                    self.logger.info("No findings for this file.")
                     return
                 
                 for i, f in enumerate(findings["findings"], 1):
-                    get_logger().info(f"[{i}] {f.get('type', 'unknown').upper()}")
-                    get_logger().info(f)
+                    formatted_items = []
+                    for key, value in f.items():
+                        formatted_items.append(f"{Fore.CYAN}{key}{Style.RESET_ALL}: {Fore.YELLOW}{value}{Style.RESET_ALL}")
+                    #self.logger.info(f"[{i}] " + " | ".join(formatted_items))
+                    print(" \n ".join(formatted_items))
 
             #print(self.findings_summary)
             if not getattr(self, "findings_summary", None):
-                get_logger().info("No findings summary available. Run a scan first.")
+                self.logger.info("No findings summary available. Run a scan first.")
                 return
 
             # Prepare indexed list
@@ -657,7 +770,7 @@ class PRSecurityReview(SecurityScanner):
                     entries.append((st, f))
 
             if not entries:
-                get_logger().info("No vulnerable files to display.")
+                self.logger.info("No vulnerable files to display.")
                 return
             
             print_list()
@@ -667,20 +780,20 @@ class PRSecurityReview(SecurityScanner):
                     continue
                 low = cmd.lower()
                 if low in ("q", "quit", "exit"):
-                    get_logger().info("Exiting viewer.")
+                    self.logger.info("Exiting viewer.")
                     break
                 if low == "list":
                     print_list()
                     continue
                 if low == "help":
-                    get_logger().info("Commands: list | view <file_index> | analyze <file_index> | q")
+                    self.logger.info("Commands: list | view <file_index> | analyze <file_index> | q")
                     continue
 
                 parts = cmd.split()
                 if len(parts) == 2 and parts[0].lower() in ("view", "analyze") and parts[1].isdigit():
                     idx = int(parts[1])
                     if idx < 1 or idx > len(entries):
-                        get_logger().error("Invalid index")
+                        self.logger.error("Invalid index")
                         continue
                     
                     _, filename = entries[idx - 1]
@@ -688,16 +801,17 @@ class PRSecurityReview(SecurityScanner):
                     if parts[0].lower() == "view":
                         show_findings(filename)
                     else:
-                        get_logger().info(f"Analyzing {filename}...")
+                        self.logger.info(f"Analyzing {filename}...")
                         analysis = await self._analyze_single_file(filename)
-                        get_logger().info(f"\n{analysis.get('analysis', analysis)}\n")
+                        #self.logger.info(f"\nAnalyses:\n")
+                        #pprint.pprint(analysis.get("raw_response"))
                     continue
 
-                get_logger().error("Unrecognized command. Type 'help' for options.")
+                self.logger.error("Unrecognized command. Type 'help' for options.")
         except KeyboardInterrupt: # for ctrl+c exit
-            get_logger().error("\nViewer interrupted.")
+            self.logger.error("\nViewer interrupted.")
         except Exception as e:
-            get_logger().error(f"Interactive viewer error: {e}")
+            self.logger.error(f"Interactive viewer error: {e}")
 
     def _write_scan_results_to_file(self, scan_results: Dict) -> bool:
         """
@@ -707,7 +821,7 @@ class PRSecurityReview(SecurityScanner):
             local_output_dir = get_settings().get("local_output_directory")
             
             if not local_output_dir:
-                get_logger().warning("local_output_directory not configured - skipping file output")
+                self.logger.warning("local_output_directory not configured - skipping file output")
                 return False
             
             os.makedirs(local_output_dir, exist_ok=True)
@@ -722,12 +836,179 @@ class PRSecurityReview(SecurityScanner):
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(scan_results, f, indent=2, ensure_ascii=False)
             
-            get_logger().info(f"Scan results written to: {file_path}")
+            self.logger.info(f"Scan results written to: {file_path}")
             return True
             
         except Exception as e:
-            get_logger().error(f"Failed to write scan results to file: {e}")
+            self.logger.error(f"Failed to write scan results to file: {e}")
             return False
+
+def convert_to_markdown(prediction_data: Dict = None) -> str:
+        """
+        Convert security analysis prediction data to markdown format
+        Note: 
+        This function accepts prediction_data in a certain format. 
+        Format defined in the "pr_security_review_prompt.toml". AI Analysis
+        using _prepare_prediction() will return a string representation of JSON
+        """
+
+        if prediction_data is None:
+            self.logger.error("prediction data is empty")
+            return "# Security Review\n\nNo security analysis available."
+        
+        # process the prediction data: remove punctuations and convert to dict
+        temp = prediction_data
+        prediction_data = prediction_data.get("raw_response")
+        prediction_data = re.sub(r'```(json)?|\n?', '', prediction_data)
+        prediction_data = json.loads(prediction_data)
+
+        md = []
+        md.append("# Security Review Report\n")
+        
+        # Executive Summary
+        if prediction_data.get('executive_summary'):
+            md.append(f"## Executive Summary\n{prediction_data['executive_summary']}\n")
+        
+        # Risk Level
+        risk_level = prediction_data.get('overall_risk_level', 'unknown').upper()
+        md.append(f"## Overall Risk Level: {risk_level}\n")
+        
+        # Findings Summary
+        md.append("## Findings Summary")
+        md.append(f"- **Critical:** {prediction_data.get('critical_findings_count', 0)}")
+        md.append(f"- **High:** {prediction_data.get('high_findings_count', 0)}")
+        md.append(f"- **Medium:** {prediction_data.get('medium_findings_count', 0)}")
+        md.append(f"- **Low:** {prediction_data.get('low_findings_count', 0)}\n")
+        
+        # Detailed Findings
+        findings = prediction_data.get('findings_analysis', [])
+        if findings:
+            md.append("---\n## Detailed Findings\n")
+            
+            for i, finding in enumerate(findings, 1):
+                md.append(f"### {i}. {finding.get('title', 'Untitled Finding')}")
+                md.append(f"**Severity:** {finding.get('severity', 'Unknown').upper()} | "
+                         f"**Type:** {finding.get('finding_type', 'Unknown')} | "
+                         f"**Confidence:** {finding.get('confidence', 'Unknown')}")
+                
+                location = finding.get('location', {})
+                if location:
+                    md.append(f"**Location:** `{location.get('file', 'Unknown')}:{location.get('line', 'N/A')}`")
+                
+                if finding.get('description'):
+                    md.append(f"\n**Description:** {finding['description']}")
+                
+                if finding.get('business_impact'):
+                    md.append(f"\n**Business Impact:** {finding['business_impact']}")
+                
+                if finding.get('attack_scenario'):
+                    md.append(f"\n**Attack Scenario:** {finding['attack_scenario']}")
+                
+                # Immediate Fix
+                immediate_fix = finding.get('immediate_fix', {})
+                if immediate_fix:
+                    md.append("\n**Immediate Fix:**")
+                    if immediate_fix.get('action'):
+                        md.append(f"- **Action:** {immediate_fix['action']}")
+                    if immediate_fix.get('estimated_effort'):
+                        md.append(f"- **Effort:** {immediate_fix['estimated_effort']}")
+                    if immediate_fix.get('code_example'):
+                        md.append(f"\n```\n{immediate_fix['code_example']}\n```")
+                
+                # Long-term Prevention
+                prevention = finding.get('long_term_prevention', [])
+                if prevention:
+                    md.append("\n**Long-term Prevention:**")
+                    for tip in prevention:
+                        md.append(f"- {tip}")
+                
+                # References
+                references = finding.get('references', [])
+                if references:
+                    md.append("\n**References:**")
+                    for ref in references:
+                        md.append(f"- {ref}")
+                
+                md.append("\n---\n")
+        
+        # Remediation Priority
+        priorities = prediction_data.get('remediation_priority', [])
+        if priorities:
+            md.append("## Remediation Priority\n")
+            for i, priority in enumerate(priorities, 1):
+                md.append(f"{i}. {priority}")
+            md.append("")
+        
+        # Security Recommendations
+        recommendations = prediction_data.get('security_recommendations', {})
+        if recommendations:
+            md.append("## Security Recommendations\n")
+            
+            if recommendations.get('immediate_actions'):
+                md.append("### Immediate Actions (24-48 hours)")
+                for action in recommendations['immediate_actions']:
+                    md.append(f"- {action}")
+                md.append("")
+            
+            if recommendations.get('short_term_improvements'):
+                md.append("### Short-term Improvements (1-2 weeks)")
+                for improvement in recommendations['short_term_improvements']:
+                    md.append(f"- {improvement}")
+                md.append("")
+            
+            if recommendations.get('long_term_strategy'):
+                md.append("### Long-term Strategy")
+                for strategy in recommendations['long_term_strategy']:
+                    md.append(f"- {strategy}")
+                md.append("")
+        
+        # False Positive Analysis
+        # Although, _extract_findings_summary also performs the de-duplication part on scan_results
+        # There's a possibility, that numbers reported by the SCAN tools and actual vulnerability count
+        # would be different.  
+        false_positives = prediction_data.get('false_positive_analysis', [])
+        if false_positives:
+            md.append("## False Positive Analysis\n")
+            for fp in false_positives:
+                md.append(f"- {fp}")
+            md.append("")
+        
+        # Summary
+        if prediction_data.get('summary'):
+            md.append(f"## Summary\n\n{prediction_data['summary']}\n")
+        
+        # Footer with metadata
+        pr_metadata = temp.get('pr_metadata', {})
+        print(temp.keys())
+        timestamp = temp.get('analysis_timestamp', 'Unknown')
+        print(timestamp)
+        
+        md.append("---\n")
+        md.append("## Report Metadata")
+        if pr_metadata.get('pr_url'):
+            md.append(f"- **PR URL:** {pr_metadata['pr_url']}")
+        if pr_metadata.get('title'):
+            md.append(f"- **PR Title:** {pr_metadata['title']}")
+        if pr_metadata.get('branch'):
+            md.append(f"- **Branch:** {pr_metadata['branch']}")
+        if pr_metadata.get('scan_type'):
+            md.append(f"- **Scan Type:** {pr_metadata['scan_type'].upper()}")
+        
+        md.append(f"- **Generated:** {temp.get("analysis_timestamp")}")
+        md.append("\n*Generated by PR-Agent Security Review*")
+
+        # write to a file (temporary output path)
+        local_output_dir = "/app/output/"
+        os.makedirs(local_output_dir, exist_ok=True)
+        
+        filename = f"security_scan_{temp.get("analysis_timestamp")}.md" # fix the name
+        file_path = os.path.join(local_output_dir, filename)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(md))
+        
+        get_logger().info(f"AI analysis written to: {file_path}")
+        return '\n'.join(md)
 
 def test():
     a = PRSecurityReview(args=["security_review", "sca"], pr_url="https://git.fplabs.tech/fplabs/serverless/-/merge_requests/293/")

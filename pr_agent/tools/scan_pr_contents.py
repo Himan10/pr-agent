@@ -6,6 +6,7 @@ import shlex
 import tempfile
 from typing import Dict, Optional
 from pr_agent.log import get_logger
+from pr_agent.config_loader import get_settings
 
 SCA_FILES_FORMAT = [
     "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", # JavaScript/Node.js
@@ -110,7 +111,7 @@ class SecurityScanner:
             
         return results
     
-    async def sast(self, rules: Optional[str] = "p/owasp-top-ten", config_path: Optional[str] = None) -> Dict:
+    async def sast(self, rules: Optional[str] = "p/default", config_path: Optional[str] = None) -> Dict:
         """
         Run semgrep for static application security testing.  
         Returns: Dict containing SAST scan results
@@ -127,8 +128,11 @@ class SecurityScanner:
                         f.write(content)
                     file_paths.append(file_path)
                 
+                # set the semgrep token in environment variable 
+                # this token allows to use rules from semgrep-rules repository
+                os.environ["SEMGREP_APP_TOKEN"] = get_settings().get("SEMGREP.SEMGREP_APP_TOKEN", None)
                 # Build semgrep command using shlex
-                cmd_str = 'semgrep --json --quiet'
+                cmd_str = 'semgrep --metrics=off --exclude=".gitignore" --json --quiet'
                 
                 if rules == "auto":
                     cmd_str += ' --config=auto'
