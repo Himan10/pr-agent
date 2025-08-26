@@ -3,6 +3,7 @@ import os
 import pprint
 import datetime
 import json
+import markdown
 from colorama import Fore, Style
 from typing import List, Dict, Any
 from functools import partial
@@ -15,7 +16,7 @@ from pr_agent.git_providers.git_provider import (IncrementalPR, get_main_pr_lang
 from pr_agent.log import get_logger
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.scan_pr_contents import SecurityScanner, SCA_FILES_FORMAT
-from pr_agent.algo.utils import ModelType, get_model
+from pr_agent.algo.utils import ModelType
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 
@@ -979,9 +980,6 @@ def convert_to_markdown(prediction_data: Dict = None) -> str:
         
         # Footer with metadata
         pr_metadata = temp.get('pr_metadata', {})
-        print(temp.keys())
-        timestamp = temp.get('analysis_timestamp', 'Unknown')
-        print(timestamp)
         
         md.append("---\n")
         md.append("## Report Metadata")
@@ -1006,9 +1004,129 @@ def convert_to_markdown(prediction_data: Dict = None) -> str:
         
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(md))
+
+        # Convert to HTML and save as separate file
+        html_content = convert_markdown_to_html('\n'.join(md))
+        html_filename = f"security_scan_{temp.get('analysis_timestamp')}.html"
+        html_file_path = os.path.join(local_output_dir, html_filename)
+        
+        with open(html_file_path, 'w', encoding='utf-8') as html_file:
+            html_file.write(html_content)
         
         get_logger().info(f"AI analysis written to: {file_path}")
+        get_logger().info(f"HTML markdown format written to: {html_file_path}")
         return '\n'.join(md)
+
+def convert_markdown_to_html(markdown_content: str) -> str:
+    """
+    Convert markdown content to HTML format
+    This method should be replaced with another tool in future. 
+    Tools that are focused only on conversion from md to html
+    As of now, this is added just as another feature.
+    """
+    if not markdown_content:
+        return ""
+    
+    try:
+        # Try to use markdown library if available
+        html_content = markdown.markdown(
+            markdown_content,
+            extensions=['tables', 'fenced_code', 'toc']
+        )
+        return html_content
+    except ImportError:
+        # Fallback to basic markdown-to-HTML conversion
+        return _basic_markdown_to_html(markdown_content)
+
+def _basic_markdown_to_html(md_content: str) -> str:
+    """
+    Basic markdown to HTML conversion without external dependencies
+    
+    Args:
+        md_content (str): Markdown content
+        
+    Returns:
+        str: Basic HTML content
+    """
+    lines = md_content.split('\n')
+    html_lines = []
+    in_code_block = False
+    code_lang = ""
+    
+    html_lines.append('<!DOCTYPE html>')
+    html_lines.append('<html><head><meta charset="UTF-8">')
+    html_lines.append('<title>Security Review Report</title>')
+    html_lines.append('<style>')
+    html_lines.append('body { font-family: Arial, sans-serif; line-height: 1.6; margin: 40px; }')
+    html_lines.append('h1, h2, h3 { color: #333; }')
+    html_lines.append('h1 { border-bottom: 2px solid #333; padding-bottom: 10px; }')
+    html_lines.append('h2 { border-bottom: 1px solid #666; padding-bottom: 5px; }')
+    html_lines.append('code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }')
+    html_lines.append('pre { background: #f8f8f8; padding: 10px; border-radius: 5px; overflow-x: auto; }')
+    html_lines.append('table { border-collapse: collapse; width: 100%; margin: 10px 0; }')
+    html_lines.append('th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }')
+    html_lines.append('th { background-color: #f2f2f2; }')
+    html_lines.append('</style></head><body>')
+    
+    for line in lines:
+        if line.startswith('```'):
+            if in_code_block:
+                html_lines.append('</pre>')
+                in_code_block = False
+            else:
+                code_lang = line[3:].strip()
+                html_lines.append(f'<pre><code class="language-{code_lang}">')
+                in_code_block = True
+            continue
+        
+        if in_code_block:
+            html_lines.append(line.replace('<', '&lt;').replace('>', '&gt;'))
+            continue
+        
+        if line.startswith('# '):
+            html_lines.append(f'<h1>{line[2:]}</h1>')
+        elif line.startswith('## '):
+            html_lines.append(f'<h2>{line[3:]}</h2>')
+        elif line.startswith('### '):
+            html_lines.append(f'<h3>{line[4:]}</h3>')
+        elif '**' in line:
+            line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+            html_lines.append(f'<p>{line}</p>')
+        elif line.startswith('- '):
+            if not html_lines or not html_lines[-1].startswith('<ul>'):
+                html_lines.append('<ul>')
+            list_item = line[2:]
+            html_lines.append(f'<li>{list_item}</li>')
+        elif re.match(r'^\d+\. ', line):
+            if not html_lines or not html_lines[-1].startswith('<ol>'):
+                html_lines.append('<ol>')
+            html_lines.append(f'<li>{line[line.find(". ") + 2:]}</li>')
+        elif line.strip() == '---':
+            html_lines.append('<hr>')
+        # Code blocks (inline)
+        elif '`' in line:
+            line = re.sub(r'`([^`]+)`', r'<code>\1</code>', line)
+            html_lines.append(f'<p>{line}</p>')
+        # paragraphs tags
+        elif line.strip():
+            html_lines.append(f'<p>{line}</p>')
+        else:
+            if html_lines and html_lines[-1].startswith('<li>'):
+                if '<ul>' in '\n'.join(html_lines[-10:]):
+                    html_lines.append('</ul>')
+                elif '<ol>' in '\n'.join(html_lines[-10:]):
+                    html_lines.append('</ol>')
+            html_lines.append('<br>')
+    
+    # Close open lists tags 
+    if html_lines and html_lines[-1].startswith('<li>'):
+        if '<ul>' in '\n'.join(html_lines[-10:]):
+            html_lines.append('</ul>')
+        elif '<ol>' in '\n'.join(html_lines[-10:]):
+            html_lines.append('</ol>')
+    
+    html_lines.append('</body></html>')
+    return '\n'.join(html_lines)
 
 def test():
     a = PRSecurityReview(args=["security_review", "sca"], pr_url="https://git.fplabs.tech/fplabs/serverless/-/merge_requests/293/")

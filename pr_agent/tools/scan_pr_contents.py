@@ -39,7 +39,6 @@ class SecurityScanner:
         Scan type: scan - scans the PR Content | report - Generate a report
         These two commands need to be executed as the "scan" does not directly generates the output
         but saves in a datastore, which later be picked by "report" command
-        Output: Dict containing secrets scan results
         """
         try:
             results = {}
@@ -161,7 +160,8 @@ class SecurityScanner:
                 if process.returncode in [0, 1]:  # 0 = no findings, 1 = findings found
                     try:
                         results = json.loads(stdout.decode())
-                        self.logger.info(f"sast scan completed with {len(results.get('results', []))} findings")
+                        #already display the vuln. count
+                        #self.logger.info(f"sast scan completed with {len(results.get('results', []))} findings")
                     except json.JSONDecodeError:
                         results = {"raw_output": stdout.decode()}
                 else:
@@ -264,7 +264,7 @@ class SecurityScanner:
                     try:
                         grype_data = json.loads(grype_stdout_text)
                         vulnerabilities = grype_data.get('matches', [])
-                        self.logger.info(f"found {len(vulnerabilities)} vulnerabilities")
+                        #self.logger.info(f"found {len(vulnerabilities)} vulnerabilities") #already showing the vuln count
                     except json.JSONDecodeError:
                         self.logger.warning("failed to parse grype output, continuing without vulnerability data")
                         vulnerabilities = []
