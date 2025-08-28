@@ -517,7 +517,7 @@ Qodo Merge uses a dynamic strategy to generate code suggestions based on the siz
 #### 1. Chunking large PRs
 
 - Qodo Merge divides large PRs into 'chunks'.
-- Each chunk contains up to `pr_code_suggestions.max_context_tokens` tokens (default: 24,000).
+- Each chunk contains up to `config.max_model_tokens` tokens (default: 32,000).
 
 #### 2. Generating suggestions
 
