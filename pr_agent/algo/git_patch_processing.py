@@ -424,6 +424,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         skip_hunk = False
         selected_lines_num = 0
         for line in patch_lines:
+            print(line)
             if 'no newline at end of file' in line.lower():
                 continue
 

@@ -5,13 +5,17 @@
 # Use this page: 'https://qodo-merge-docs.qodo.ai/ai_search/' to ask questions about the configuration options.
 
 [config]
+# Local Output
+publish_local_output=true #write to local dir
+#local_output_directory="/Users/rohityadav/git/"
+local_output_directory="/app/output/"
 # models
-model="gpt-5-2025-08-07"
-fallback_models=["o4-mini"]
+model="gpt-4o-mini"
+fallback_models=["gpt-4o-mini"]
 #model_reasoning="o4-mini" # dedicated reasoning model for self-reflection
 #model_weak="gpt-4o" # optional, a weaker model to use for some easier tasks
 # CLI
-git_provider="github"
+git_provider="gitlab"
 publish_output=true
 publish_output_progress=true
 verbosity_level=0 # 0,1,2
@@ -274,7 +278,7 @@ push_commands = [
 ]
 
 [gitlab]
-url = "https://gitlab.com"
+url = "https://git.fplabs.tech"
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",

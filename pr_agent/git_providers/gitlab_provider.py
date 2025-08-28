@@ -68,7 +68,7 @@ class GitLabProvider(GitProvider):
         self.git_files = None
         self.temp_comments = []
         self.pr_url = merge_request_url
-        self._set_merge_request(merge_request_url)
+        self._set_merge_request(merge_request_url) # This method is responsible to get all the relevant PR info and contents. 
         self.RE_HUNK_HEADER = re.compile(
             r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
         self.incremental = incremental

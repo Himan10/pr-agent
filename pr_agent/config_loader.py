@@ -33,6 +33,7 @@ global_settings = Dynaconf(
         "settings/pr_help_docs_headings_prompts.toml",
         "settings/.secrets.toml",
         "settings_prod/.secrets.toml",
+        "settings/pr_security_review_prompts.toml"
     ]]
 )
 
